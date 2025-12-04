@@ -17,7 +17,7 @@ program apply_incr_noahmp_snow
 
  ! index to map between tile and vector space 
  integer, allocatable :: tile2vector(:,:) 
- double precision, allocatable :: increment(:) 
+ double precision, allocatable :: increment_sd(:), increment_st(:,:)
  double precision, allocatable :: swe_back(:) 
  double precision, allocatable :: snow_depth_back(:) 
 
@@ -134,7 +134,8 @@ program apply_incr_noahmp_snow
         allocate(noahmp_state%snow_ice_layer     (len_land_vec,3))
         allocate(noahmp_state%snow_liq_layer     (len_land_vec,3))
         allocate(noahmp_state%temperature_soil   (len_land_vec))
-        allocate(increment   (len_land_vec)) ! increment to snow depth over land
+        allocate(increment_sd                    (len_land_vec))   ! increment to snow depth over land
+        allocate(increment_st                    (len_land_vec,3)) ! increment to snow temperature over land
 
         if (frac_grid) then
             allocate(grid_state%land_frac          (len_land_vec)) 
@@ -153,7 +154,7 @@ program apply_incr_noahmp_snow
 
         ! READ SNOW DEPTH INCREMENT
         call   read_fv3_increment(tile_num, inc_path_full, date_str, hour_str, res, &
-                    len_land_vec, tile2vector, noahmp_state%name_snow_depth, truncate, increment)
+                    len_land_vec, tile2vector, noahmp_state%name_snow_depth, truncate, increment_sd, increment_st)
     
         if (frac_grid) then ! save background
             swe_back = noahmp_state%swe
@@ -162,7 +163,7 @@ program apply_incr_noahmp_snow
 
         ! ADJUST THE SNOW STATES OVER LAND
         !TODO: return and check error code from this call (for now assume it is well handled inside function)
-        call UpdateAllLayers(len_land_vec, increment, noahmp_state, noincr_threshold, print_summary, print_debug)
+        call UpdateAllLayers(len_land_vec, increment_sd, increment_st, noahmp_state, noincr_threshold, print_summary, print_debug)
 
         ! IF FRAC GRID, ADJUST SNOW STATES OVER GRID CELL
         if (frac_grid) then
@@ -191,7 +192,7 @@ program apply_incr_noahmp_snow
                 endif
             enddo
         endif
-        
+
         ! WRITE OUT ADJUSTED RESTART
         call   write_fv3_restart(trim(restart_file), noahmp_state, grid_state, res, ncid, len_land_vec, & 
                     frac_grid, tile2vector) 
@@ -212,7 +213,8 @@ program apply_incr_noahmp_snow
         deallocate(noahmp_state%snow_ice_layer)
         deallocate(noahmp_state%snow_liq_layer)
         deallocate(noahmp_state%temperature_soil)
-        deallocate(increment) ! increment to snow depth over land
+        deallocate(increment_sd) ! increment to snow depth over land
+        deallocate(increment_st) ! increment to snow temperature over land
 
         if (frac_grid) then
             deallocate(grid_state%land_frac) 
@@ -347,7 +349,7 @@ program apply_incr_noahmp_snow
 
     ierr=nf90_open(trim(restart_file),nf90_write,ncid)
     call netcdf_err(ierr, 'opening file: '//trim(restart_file) )
- 
+
     ! READ MASK from restart
     ierr=nf90_inq_varid(ncid, "slmsk", id_var)
     call netcdf_err(ierr, 'reading slmsk id' )
@@ -620,7 +622,7 @@ end subroutine read_fv3_orog
 !  file format is same as restart file
 !--------------------------------------------------------------
  subroutine read_fv3_increment(tile_num, inc_path, date_str, hour_str, res, & 
-                len_land_vec,tile2vector, control_var, truncate, increment)
+                len_land_vec,tile2vector, control_var, truncate, increment_sd, increment_st)
 
  implicit none 
 
@@ -633,10 +635,11 @@ end subroutine read_fv3_orog
  integer, intent(in) :: tile2vector(len_land_vec,2)
  character(len=10), intent(in)  :: control_var
  logical, intent(in) :: truncate
- double precision, intent(out) :: increment(len_land_vec)     ! snow depth increment
+ double precision, intent(out) :: increment_sd(len_land_vec)   ! snow depth increment
+ double precision, intent(out) :: increment_st(len_land_vec,3) ! snow temperature increment
 
  character(len=512) :: incr_file
- character(len=1) :: rankch
+ character(len=1) :: rankch, layer
  logical :: file_exists
  integer :: ierr 
  integer :: id_dim, id_var, fres, ncid
@@ -668,15 +671,37 @@ end subroutine read_fv3_orog
        call mpi_abort(mpi_comm_world, ierr)
     endif
 
-    ! read snow_depth (file name: snwdph, vert dim 1)
-    call read_nc_var2D(ncid, trim(incr_file), len_land_vec, res, tile2vector, 0, & 
-                        control_var, increment)
+    ! read snow depth increments (file name: snwdph, vert dim 1)
+    ierr=nf90_inq_varid(ncid, trim(control_var), id_var)
+    if (ierr == 0) then
+       call read_nc_var2D(ncid, trim(incr_file), len_land_vec, res, tile2vector, 0, &
+                           control_var, increment_sd)
+    else
+       print*, 'Variable '//trim(control_var)//' does not exist in '//trim(incr_file)
+       increment_sd = 0.
+    end if
+
+    ! read snow temperature increments
+    do nn = 1, 3
+       write(layer, '(i1.1)') nn
+       ierr=nf90_inq_varid(ncid,'snowt'//layer//'_inc', id_var)
+       if (ierr == 0) then
+          call read_nc_var2D(ncid, trim(incr_file), len_land_vec, res, tile2vector, 0, &
+                              'snowt'//layer//'_inc', increment_st(:,nn))
+       else
+          print*, 'Variable snowt'//layer//'_inc does not exist in '//trim(incr_file)
+          increment_st(:,nn) = 0.
+       end if
+    end do
+
     ! Truncate increments if requested
     if (truncate) then
         do nn = 1, len_land_vec
-            increment(nn) = dble(nint(increment(nn) * 1.0d7)) / 1.0d7
+            increment_sd(nn) = dble(nint(increment_sd(nn) * 1.0d7)) / 1.0d7
+            increment_st(:,nn) = dble(nint(increment_st(:,nn) * 1.0d7)) / 1.0d7
         end do
     end if
+
     ierr=nf90_close(ncid)
     call netcdf_err(ierr, 'closing file: '//trim(incr_file) )
 

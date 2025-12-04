@@ -26,7 +26,7 @@ module NoahMPdisag_module
 
 contains
 
-  subroutine UpdateAllLayers(vector_length, increment, noahmp, noincr_threshold, print_out_summary, print_debug)
+  subroutine UpdateAllLayers(vector_length, increment_sd, increment_st, noahmp, noincr_threshold, print_out_summary, print_debug)
   
    implicit none
 
@@ -34,7 +34,8 @@ contains
 
  ! intent(in)
   integer, intent(in)                :: vector_length
-  double precision, intent(in)       :: increment(vector_length) ! snow depth increment
+  double precision, intent(in)       :: increment_sd(vector_length)    ! snow depth increment
+  double precision, intent(in)       :: increment_st(vector_length,3)  ! snow temperature increment (saved in 3rd layer)
   
 ! intent(inout)
   type(noahmp_type), intent(inout)   :: noahmp
@@ -79,9 +80,9 @@ contains
 
     pathway = -1  !  increment is zero.
 
-    anal_snow_depth = snow_depth(iloc) + increment(iloc) ! analysed bulk snow depth
+    anal_snow_depth = snow_depth(iloc) + increment_sd(iloc) ! analysed bulk snow depth
 
-    if (abs( increment(iloc)) > 0.01 )  then ! skip if no (or small) increment
+    if (abs( increment_sd(iloc)) > 0.01 )  then ! skip if no (or small) increment
 
         if(anal_snow_depth <=  0.0001) then ! correct negative snow depth here
 
@@ -107,7 +108,7 @@ contains
             layer_depths(2) = snow_soil_interface(iloc,2)-snow_soil_interface(iloc,1)
             layer_depths(3) = snow_soil_interface(iloc,3)-snow_soil_interface(iloc,2)
 
-            if(increment(iloc) > 0.0) then  ! add snow in multi-layer mode
+            if(increment_sd(iloc) > 0.0) then  ! add snow in multi-layer mode
               
               if(snow_depth(iloc) > noincr_threshold) then 
 
@@ -126,7 +127,7 @@ contains
                   partition_ratio = -layer_depths(ilayer)/snow_depth(iloc)*1000.d0
                   layer_density = (snow_ice_layer(iloc,ilayer)+snow_liq_layer(iloc,ilayer)) / &
                                     (-layer_depths(ilayer))
-                  swe_increment = partition_ratio * increment(iloc) * layer_density / 1000.d0
+                  swe_increment = partition_ratio * increment_sd(iloc) * layer_density / 1000.d0
                   liq_ratio = snow_liq_layer(iloc,ilayer) / &
                                 ( snow_ice_layer(iloc,ilayer) + snow_liq_layer(iloc,ilayer) )
                   !liq_ratio = 0. ! add all new snow as ice.
@@ -136,14 +137,14 @@ contains
                                                     liq_ratio * swe_increment
                   do iinter = ilayer, 3  ! remove snow from each snow layer
                     snow_soil_interface(iloc,iinter) = snow_soil_interface(iloc,iinter) - &
-                                                         partition_ratio * increment(iloc)/1000.d0
+                                                         partition_ratio * increment_sd(iloc)/1000.d0
                   end do
 
                 end do layerloop1
  
               endif  !da_threshold
 
-            elseif(increment(iloc) < 0.0) then  ! remove snow in multi-layer mode
+            elseif(increment_sd(iloc) < 0.0) then  ! remove snow in multi-layer mode
 
               pathway = 2 ! removing snow in multi-layer mode
               count3 = count3+1
@@ -155,7 +156,7 @@ contains
                 partition_ratio = -layer_depths(ilayer)/snow_depth(iloc)*1000.d0
                 layer_density = (snow_ice_layer(iloc,ilayer)+snow_liq_layer(iloc,ilayer)) / &
                                   (-layer_depths(ilayer))
-                swe_increment = partition_ratio * increment(iloc) * layer_density / 1000.d0
+                swe_increment = partition_ratio * increment_sd(iloc) * layer_density / 1000.d0
                 liq_ratio = snow_liq_layer(iloc,ilayer) / &
                               ( snow_ice_layer(iloc,ilayer) + snow_liq_layer(iloc,ilayer) )
                 snow_ice_layer(iloc,ilayer) = snow_ice_layer(iloc,ilayer) + &
@@ -164,7 +165,7 @@ contains
                                                   liq_ratio * swe_increment
                 do iinter = ilayer, 3  ! remove snow from each snow layer
                   snow_soil_interface(iloc,iinter) = snow_soil_interface(iloc,iinter) - &
-                                                       partition_ratio * increment(iloc)/1000.d0
+                                                       partition_ratio * increment_sd(iloc)/1000.d0
                 end do
 
               end do layerloop2
@@ -197,7 +198,7 @@ contains
 
           elseif(active_layers == 0) then  ! snow starts in zero-layer mode
 
-            if(increment(iloc) > 0.0) then  ! add snow in zero-layer mode
+            if(increment_sd(iloc) > 0.0) then  ! add snow in zero-layer mode
 
               !if(snow_depth(iloc) == 0) then   ! no snow present, so assume density based on soil temperature
               if(snow_depth(iloc) < 1.) then   ! need at least 1 mm, or use new snow density
@@ -208,8 +209,8 @@ contains
                 layer_density = swe(iloc) / snow_depth(iloc) * 1000.d0
               end if
               if (temperature_soil(iloc)<=273.155) then  ! do not add is soil too warm (will melt)
-                  delta  = min(snow_depth(iloc) + increment(iloc), 50.) - snow_depth(iloc)
-                  snow_depth(iloc) = min(snow_depth(iloc) + increment(iloc), 50.) ! limit amount of snow that can
+                  delta  = min(snow_depth(iloc) + increment_sd(iloc), 50.) - snow_depth(iloc)
+                  snow_depth(iloc) = min(snow_depth(iloc) + increment_sd(iloc), 50.) ! limit amount of snow that can
                                                                                   ! be added so that no more than one layer
                                                                                   ! is created.
                   swe(iloc) = swe(iloc) + delta * layer_density / 1000.d0
@@ -236,14 +237,14 @@ contains
                 end do
               end if
 
-            elseif(increment(iloc) < 0.0) then  ! remove snow in zero-layer mode
+            elseif(increment_sd(iloc) < 0.0) then  ! remove snow in zero-layer mode
 
               pathway = 6 ! removing snow in zero layer mode
               count7=count7+1
 
               layer_density = swe(iloc) / snow_depth(iloc) * 1000.d0
-              snow_depth(iloc) = snow_depth(iloc) + increment(iloc)
-              swe(iloc) = swe(iloc) + increment(iloc) * layer_density / 1000.d0
+              snow_depth(iloc) = snow_depth(iloc) + increment_sd(iloc)
+              swe(iloc) = swe(iloc) + increment_sd(iloc) * layer_density / 1000.d0
               swe_previous(iloc) = swe(iloc)
 
               active_snow_layers(iloc)      = 0.0
@@ -261,6 +262,20 @@ contains
         count0 = count0+1
     end if ! non-zero increment
     
+    if (active_snow_layers(iloc) == -3) then
+        ! For 3-layer snow, add increment to the 3rd layer (index = 1 in tsnoxy)
+        temperature_snow(iloc, 1) = temperature_snow(iloc, 1) + increment_st(iloc, 3)
+        temperature_snow(iloc, 1) = min(temperature_snow(iloc, 1), 273.16)
+    elseif (active_snow_layers(iloc) == -2) then
+        ! For 2-layer snow, add increment to the 2nd layer (index = 2 in tsnoxy)
+        temperature_snow(iloc, 2) = temperature_snow(iloc, 2) + increment_st(iloc, 3)
+        temperature_snow(iloc, 2) = min(temperature_snow(iloc, 2), 273.16)
+    elseif (active_snow_layers(iloc) == -1) then
+        ! For 1-layer snow, add increment to the 1st layer (index = 3 in tsnoxy)
+        temperature_snow(iloc, 3) = temperature_snow(iloc, 3) + increment_st(iloc, 3)
+        temperature_snow(iloc, 3) = min(temperature_snow(iloc, 3), 273.16)
+    end if
+
   end do
 
   if (print_out_summary) then 
